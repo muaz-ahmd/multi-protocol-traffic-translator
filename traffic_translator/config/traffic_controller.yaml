@@ -1,0 +1,49 @@
+# Basic Traffic Translator Configuration
+# Minimal configuration for testing
+
+translation:
+  max_phase_duration: 300
+  min_yellow_duration: 3
+  preemption_enabled: true
+  history_size: 50
+
+  default_durations:
+    green: 30
+    yellow: 5
+    red: 30
+
+decision_engine:
+  fallback_order: [local]
+
+  engines:
+    local:
+      type: local
+
+feedback:
+  sources: {}  # No feedback sources for basic config
+
+adapters:
+  mqtt_broker:
+    type: mqtt
+    enabled: true
+    controller_id: central_hub
+    connection:
+      host: "localhost"
+      port: 1883
+      client_id: "traffic_translator_basic"
+
+  gpio_controller_1:
+    type: gpio
+    enabled: false  # Disabled by default for safety
+    controller_id: gpio_1
+    connection:
+      gpio_mode: BCM
+      pin_mapping:
+        phase_1_red: 17
+        phase_1_yellow: 18
+        phase_1_green: 27
+      phase_config:
+        phase_1:
+          red: phase_1_red
+          yellow: phase_1_yellow
+          green: phase_1_green

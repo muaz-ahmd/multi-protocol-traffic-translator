@@ -1,0 +1,175 @@
+# Traffic Translator Configuration Example
+# Copy this file and modify for your deployment
+
+# Translation Engine Configuration
+translation:
+  max_phase_duration: 300  # 5 minutes
+  min_yellow_duration: 3    # 3 seconds
+  preemption_enabled: true
+  history_size: 100
+
+  # Default durations for commands (seconds)
+  default_durations:
+    green: 45
+    yellow: 5
+    red: 30
+    flash: 10
+
+  # Conflicting phase definitions
+  conflicting_phases:
+    phase_1: [phase_3]  # Phase 1 conflicts with phase 3
+    phase_2: [phase_4]  # Phase 2 conflicts with phase 4
+
+# Decision Engine Configuration
+decision_engine:
+  fallback_order: [rest, local]  # Try REST API first, then local rules
+
+  engines:
+    rest:
+      type: rest
+      base_url: "http://localhost:8080/api"
+      api_key: "your-api-key-here"
+      timeout: 5.0
+
+    local:
+      type: local
+      rules:
+        - name: "traffic_adaptive"
+          condition: "vehicle_count > 10"
+          action: "extend_green"
+
+# Feedback Listener Configuration
+feedback:
+  sources:
+    snmp_traps:
+      type: snmp
+      host: "192.168.1.100"
+      port: 162
+      community: "public"
+
+    modbus_polling:
+      type: modbus
+      protocol: tcp
+      host: "192.168.1.101"
+      port: 502
+      unit_id: 1
+      poll_interval: 2.0
+
+# Protocol Adapters Configuration
+adapters:
+  # MQTT Central Hub
+  mqtt_broker:
+    type: mqtt
+    enabled: true
+    controller_id: central_hub
+    connection:
+      host: "localhost"
+      port: 1883
+      client_id: "traffic_translator_main"
+      keepalive: 60
+    topics:
+      command: "traffic/+/command/+"
+      status: "traffic/+/status/+"
+      feedback: "traffic/+/feedback/+"
+      error: "traffic/+/error"
+
+  # NTCIP Controller
+  ntcip_controller_1:
+    type: ntcip
+    enabled: true
+    controller_id: intersection_1
+    polling_interval: 5.0
+    connection:
+      host: "192.168.1.10"
+      port: 161
+      community: "public"
+      timeout: 5
+      retries: 3
+    mapping:
+      phase_count: 8
+      detector_count: 16
+
+  # Modbus PLC Controller
+  plc_controller_1:
+    type: modbus
+    enabled: true
+    controller_id: plc_1
+    polling_interval: 2.0
+    connection:
+      protocol: tcp
+      host: "192.168.1.11"
+      port: 502
+      unit_id: 1
+      timeout: 5.0
+    mapping:
+      register_map:
+        phase_control:
+          address: 1000
+          count: 8
+          type: coil
+        phase_status:
+          address: 1100
+          count: 8
+          type: holding
+        detector_data:
+          address: 1200
+          count: 16
+          type: input
+        fault_status:
+          address: 1300
+          count: 4
+          type: holding
+
+  # GPIO Relay Controller (Raspberry Pi)
+  gpio_controller_1:
+    type: gpio
+    enabled: true
+    controller_id: gpio_1
+    polling_interval: 1.0
+    connection:
+      gpio_mode: BCM
+      pin_mapping:
+        phase_1_red: 17
+        phase_1_yellow: 18
+        phase_1_green: 27
+        phase_2_red: 22
+        phase_2_yellow: 23
+        phase_2_green: 24
+      phase_config:
+        phase_1:
+          red: phase_1_red
+          yellow: phase_1_yellow
+          green: phase_1_green
+        phase_2:
+          red: phase_2_red
+          yellow: phase_2_yellow
+          green: phase_2_green
+
+  # REST API Integration
+  rest_api_1:
+    type: rest
+    enabled: true
+    controller_id: api_1
+    polling_interval: 10.0
+    connection:
+      base_url: "http://api.traffic-controller.com"
+      api_key: "your-api-key"
+      timeout: 10.0
+    mapping:
+      endpoints:
+        status: "/v1/status"
+        command: "/v1/command"
+        phases: "/v1/phases"
+        detectors: "/v1/detectors"
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s %(name)s %(levelname)s: %(message)s"
+  file: "traffic_translator.log"
+
+# System Configuration
+system:
+  max_concurrent_commands: 10
+  command_timeout: 30
+  health_check_interval: 60
