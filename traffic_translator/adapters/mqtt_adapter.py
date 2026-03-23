@@ -15,7 +15,8 @@ try:
 except ImportError:
     PAHO_MQTT_AVAILABLE = False
 
-from .base_adapter import BaseAdapter, AdapterConfig, EventDrivenAdapter
+from .base_adapter import BaseAdapter, EventDrivenAdapter
+from ..config.models import AdapterModel
 from ..core.message import TrafficMessage
 
 
@@ -27,8 +28,8 @@ class MQTTAdapter(EventDrivenAdapter):
     and other protocol adapters.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
 
         # MQTT configuration
         conn_params = config.connection_params or {}
@@ -52,8 +53,8 @@ class MQTTAdapter(EventDrivenAdapter):
         # MQTT client
         self.client = None
 
-        # Message queues
-        self._incoming_queue = asyncio.Queue()
+        # Message queue for processing with max backpressure bounds
+        self._message_queue = asyncio.Queue(maxsize=1000)
         self._outgoing_queue = asyncio.Queue()
 
         # Statistics

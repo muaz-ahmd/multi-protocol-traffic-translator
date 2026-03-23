@@ -9,13 +9,16 @@ import asyncio
 from typing import Dict, Any, Optional, List
 
 try:
-    from pysnmp.hlapi import *
-    from pysnmp.entity.rfc3413.oneliner import cmdgen
+    from pysnmp.hlapi.asyncio import (
+        SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
+        ObjectType, ObjectIdentity, getCmd, setCmd, Integer, OctetString
+    )
     PYSNMP_AVAILABLE = True
 except ImportError:
     PYSNMP_AVAILABLE = False
 
-from .base_adapter import BaseAdapter, AdapterConfig, PollingAdapter
+from .base_adapter import BaseAdapter, PollingAdapter
+from ..config.models import AdapterModel
 from ..core.message import TrafficMessage
 from ..core.stmp_ntcip import NTCIP1202, NTCIPMessageMapper, SNMPTrapDefinitions
 
@@ -27,8 +30,8 @@ class NTCIPAdapter(PollingAdapter):
     Uses SNMP GET/SET operations to communicate with NTCIP 1202 compliant controllers.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
 
         # SNMP configuration
         conn_params = config.connection_params or {}
@@ -64,16 +67,13 @@ class NTCIPAdapter(PollingAdapter):
         try:
             self.logger.info(f"Connecting to NTCIP controller at {self.host}:{self.port}")
 
-            # Test connection with a simple GET request
-            error_indication, error_status, error_index, var_binds = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: getCmd(
-                    SnmpEngine(),
-                    CommunityData(self.community, mpModel=0),
-                    UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
-                    ContextData(),
-                    ObjectType(ObjectIdentity('1.3.6.1.2.1.1.1.0'))  # sysDescr
-                )
+            # Test connection with a native async GET request
+            error_indication, error_status, error_index, var_binds = await getCmd(
+                SnmpEngine(),
+                CommunityData(self.community, mpModel=0),
+                UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
+                ContextData(),
+                ObjectType(ObjectIdentity('1.3.6.1.2.1.1.1.0'))  # sysDescr
             )
 
             if error_indication:
@@ -182,16 +182,13 @@ class NTCIPAdapter(PollingAdapter):
                 value = self._convert_value_for_snmp(cmd['value'])
                 var_binds.append(ObjectType(oid, value))
 
-            # Execute SET
-            error_indication, error_status, error_index, var_binds_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: setCmd(
-                    self.snmp_engine,
-                    CommunityData(self.community, mpModel=0),
-                    UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
-                    ContextData(),
-                    *var_binds
-                )
+            # Execute native async SET
+            error_indication, error_status, error_index, var_binds_result = await setCmd(
+                self.snmp_engine,
+                CommunityData(self.community, mpModel=0),
+                UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
+                ContextData(),
+                *var_binds
             )
 
             if error_indication:
@@ -219,16 +216,13 @@ class NTCIPAdapter(PollingAdapter):
                 oid = NTCIP1202.get_phase_status(phase_num)
                 var_binds.append(ObjectType(ObjectIdentity(oid)))
 
-            # Execute GET
-            error_indication, error_status, error_index, var_binds_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: getCmd(
-                    self.snmp_engine,
-                    CommunityData(self.community, mpModel=0),
-                    UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
-                    ContextData(),
-                    *var_binds
-                )
+            # Execute native async GET
+            error_indication, error_status, error_index, var_binds_result = await getCmd(
+                self.snmp_engine,
+                CommunityData(self.community, mpModel=0),
+                UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
+                ContextData(),
+                *var_binds
             )
 
             if error_indication:
@@ -262,16 +256,13 @@ class NTCIPAdapter(PollingAdapter):
                 oid = NTCIP1202.get_detector_count(detector_num)
                 var_binds.append(ObjectType(ObjectIdentity(oid)))
 
-            # Execute GET
-            error_indication, error_status, error_index, var_binds_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: getCmd(
-                    self.snmp_engine,
-                    CommunityData(self.community, mpModel=0),
-                    UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
-                    ContextData(),
-                    *var_binds
-                )
+            # Execute native async GET
+            error_indication, error_status, error_index, var_binds_result = await getCmd(
+                self.snmp_engine,
+                CommunityData(self.community, mpModel=0),
+                UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
+                ContextData(),
+                *var_binds
             )
 
             if error_indication or error_status:

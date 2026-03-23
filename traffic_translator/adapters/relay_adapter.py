@@ -14,7 +14,8 @@ try:
 except ImportError:
     GPIO_AVAILABLE = False
 
-from .base_adapter import BaseAdapter, AdapterConfig, PollingAdapter
+from .base_adapter import BaseAdapter, PollingAdapter
+from ..config.models import AdapterModel
 from ..core.message import TrafficMessage
 
 
@@ -26,8 +27,8 @@ class GPIOAdapter(PollingAdapter):
     Designed for Raspberry Pi and similar single-board computers.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
 
         # GPIO configuration
         conn_params = config.connection_params or {}

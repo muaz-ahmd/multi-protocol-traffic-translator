@@ -2,28 +2,78 @@
 Base Adapter for Multi-Protocol Traffic Translator
 
 Abstract base class for all protocol adapters (NTCIP, Modbus, GPIO, REST, MQTT).
+Includes a Circuit Breaker for resilient connection handling.
 """
 
 import logging
 import asyncio
+import time
+from enum import Enum
 from typing import Dict, Any, List, Optional, Callable
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 from ..core.message import TrafficMessage
+from ..config.models import AdapterModel
 
 
-@dataclass
-class AdapterConfig:
-    """Configuration for a protocol adapter."""
-    name: str
-    type: str
-    enabled: bool = True
-    controller_id: str = ""
-    connection_params: Dict[str, Any] = None
-    mapping_rules: Dict[str, Any] = None
-    polling_interval: float = 5.0
-    timeout: float = 10.0
+class CircuitState(Enum):
+    CLOSED = "closed"       # Normal operation
+    OPEN = "open"           # Failing, fast-reject all calls
+    HALF_OPEN = "half_open" # Allowing a single probe request
+
+
+class CircuitBreaker:
+    """
+    Circuit Breaker pattern for adapter resilience.
+
+    States:
+        CLOSED  – Normal. Failures increment a counter.
+        OPEN    – After `failure_threshold` consecutive failures, rejects
+                  all calls immediately for `recovery_timeout` seconds.
+        HALF_OPEN – After timeout expires, allows ONE probe call through.
+                    Success → CLOSED, Failure → OPEN again.
+    """
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time: float = 0.0
+        self._logger = logging.getLogger(f"{__name__}.CircuitBreaker")
+
+    @property
+    def state(self) -> CircuitState:
+        if self._state == CircuitState.OPEN:
+            # Check if recovery timeout has elapsed
+            if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+        return self._state
+
+    def record_success(self):
+        """Record a successful call and reset the breaker."""
+        self._failure_count = 0
+        self._state = CircuitState.CLOSED
+
+    def record_failure(self):
+        """Record a failed call and potentially trip the breaker."""
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= self.failure_threshold:
+            self._state = CircuitState.OPEN
+            self._logger.warning(
+                f"Circuit OPEN after {self._failure_count} consecutive failures. "
+                f"Will retry in {self.recovery_timeout}s."
+            )
+
+    def allow_request(self) -> bool:
+        """Return True if a request is allowed through the breaker."""
+        current = self.state
+        if current == CircuitState.CLOSED:
+            return True
+        if current == CircuitState.HALF_OPEN:
+            return True  # Allow one probe
+        return False  # OPEN – fast-reject
 
 
 class BaseAdapter(ABC):
@@ -34,18 +84,19 @@ class BaseAdapter(ABC):
     consistent behavior across different communication protocols.
     """
 
-    def __init__(self, config: AdapterConfig):
+    def __init__(self, name: str, config: AdapterModel):
         """
         Initialize adapter.
 
         Args:
+            name: Adapter identifier
             config: Adapter configuration
         """
         self.config = config
-        self.logger = logging.getLogger(f"{__name__}.{config.name}")
+        self.name = name
+        self.logger = logging.getLogger(f"{__name__}.{self.name}")
 
-        self.name = config.name
-        self.controller_id = config.controller_id or config.name
+        self.controller_id = config.controller_id or self.name
         self.enabled = config.enabled
 
         # Message handling
@@ -55,8 +106,39 @@ class BaseAdapter(ABC):
         self._connected = False
         self._connecting = False
 
+        # Circuit breaker for resilience
+        self._circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=30.0
+        )
+
         # Background tasks
         self._tasks: List[asyncio.Task] = []
+
+    async def send_command_safe(self, message: TrafficMessage) -> bool:
+        """
+        Send a command through the circuit breaker.
+
+        If the circuit is OPEN, the call is fast-rejected.
+        On success the breaker resets; on failure, the count increments.
+        """
+        if not self._circuit_breaker.allow_request():
+            self.logger.warning(
+                f"Circuit breaker OPEN for {self.name} – rejecting command"
+            )
+            return False
+
+        try:
+            result = await self.send_command(message)
+            if result:
+                self._circuit_breaker.record_success()
+            else:
+                self._circuit_breaker.record_failure()
+            return result
+        except Exception as e:
+            self._circuit_breaker.record_failure()
+            self.logger.error(f"Command failed through circuit breaker: {e}")
+            return False
 
     def set_message_callback(self, callback: Callable[[TrafficMessage], None]):
         """
@@ -250,8 +332,8 @@ class PollingAdapter(BaseAdapter):
     Base class for adapters that poll for status updates.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
         self.polling_interval = config.polling_interval
         self._polling_task: Optional[asyncio.Task] = None
 
@@ -284,8 +366,8 @@ class EventDrivenAdapter(BaseAdapter):
     Base class for adapters that receive events asynchronously.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
         self._event_task: Optional[asyncio.Task] = None
 
     async def _start_background_tasks(self):

@@ -16,7 +16,8 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
 
-from .base_adapter import BaseAdapter, AdapterConfig, PollingAdapter
+from .base_adapter import BaseAdapter, PollingAdapter
+from ..config.models import AdapterModel
 from ..core.message import TrafficMessage
 
 
@@ -27,8 +28,8 @@ class RESTAdapter(PollingAdapter):
     Communicates with traffic controllers via RESTful HTTP APIs.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
 
         # REST API configuration
         conn_params = config.connection_params or {}

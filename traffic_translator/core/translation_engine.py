@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .message import TrafficMessage
+from ..config.models import TranslationConfig
 
 
 class ValidationError(Exception):
@@ -54,7 +55,7 @@ class TranslationEngine:
     - Optimization for safety and efficiency
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: TranslationConfig):
         """
         Initialize translation engine.
 
@@ -68,16 +69,16 @@ class TranslationEngine:
         self.phase_states: Dict[str, PhaseState] = {}
 
         # Validation rules
-        self.max_phase_duration = config.get('max_phase_duration', 300)  # 5 minutes
-        self.min_yellow_duration = config.get('min_yellow_duration', 3)   # 3 seconds
-        self.preemption_enabled = config.get('preemption_enabled', True)
+        self.max_phase_duration = config.max_phase_duration
+        self.min_yellow_duration = config.min_yellow_duration
+        self.preemption_enabled = config.preemption_enabled
 
         # Conflict detection
-        self.conflicting_phases = config.get('conflicting_phases', {})
+        self.conflicting_phases = config.conflicting_phases
 
         # Command history for optimization
         self.command_history: List[TrafficMessage] = []
-        self.history_size = config.get('history_size', 100)
+        self.history_size = config.history_size
 
     def validate_message(self, message: TrafficMessage) -> bool:
         """
@@ -211,7 +212,7 @@ class TranslationEngine:
 
         # Apply default durations if not specified
         if message.duration is None:
-            defaults = self.config.get('default_durations', {})
+            defaults = self.config.default_durations
             message.duration = defaults.get(message.command.lower(), 30)
 
         # Adjust priority based on command type

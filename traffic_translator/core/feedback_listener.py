@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
 from .message import TrafficMessage
+from ..config.models import FeedbackConfig, FeedbackSourceModel
 
 
 @dataclass
@@ -48,7 +49,7 @@ class SNMPFeedbackSource(FeedbackSource):
     SNMP trap listener for NTCIP feedback.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: FeedbackSourceModel):
         """
         Initialize SNMP feedback source.
 
@@ -58,9 +59,9 @@ class SNMPFeedbackSource(FeedbackSource):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
-        self.host = config['host']
-        self.port = config.get('port', 162)
-        self.community = config.get('community', 'public')
+        self.host = config.host
+        self.port = config.port or 162
+        self.community = config.community or 'public'
 
         self._active = False
         self._task: Optional[asyncio.Task] = None
@@ -133,7 +134,7 @@ class ModbusFeedbackSource(FeedbackSource):
     Modbus polling for PLC feedback.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: FeedbackSourceModel):
         """
         Initialize Modbus feedback source.
 
@@ -143,16 +144,15 @@ class ModbusFeedbackSource(FeedbackSource):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
-        self.host = config['host']
-        self.port = config.get('port', 502)
-        self.unit_id = config.get('unit_id', 1)
-        self.poll_interval = config.get('poll_interval', 2.0)  # seconds
+        self.host = config.host
+        self.port = config.port or 502
+        self.unit_id = config.unit_id or 1
+        self.poll_interval = config.poll_interval or 2.0  # seconds
 
         self._active = False
         self._task: Optional[asyncio.Task] = None
 
-        # Modbus register mappings
-        self.register_map = config.get('register_map', {
+        self.register_map = getattr(config, 'register_map', {
             'phase_status': {'address': 1000, 'count': 8},  # 8 phases
             'detector_data': {'address': 1100, 'count': 16},  # 16 detectors
             'fault_status': {'address': 1200, 'count': 4},   # 4 fault words
@@ -262,7 +262,7 @@ class FeedbackListener:
     Manages multiple feedback sources and converts events to TrafficMessages.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: FeedbackConfig):
         """
         Initialize feedback listener.
 
@@ -279,10 +279,10 @@ class FeedbackListener:
 
     def _initialize_sources(self):
         """Initialize configured feedback sources."""
-        source_configs = self.config.get('sources', {})
+        source_configs = self.config.sources
 
         for source_name, source_config in source_configs.items():
-            source_type = source_config['type']
+            source_type = source_config.type
 
             if source_type == 'snmp':
                 source = SNMPFeedbackSource(source_config)

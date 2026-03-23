@@ -9,13 +9,14 @@ import asyncio
 from typing import Dict, Any, Optional, List
 
 try:
-    from pymodbus.client import ModbusTcpClient, ModbusSerialClient
+    from pymodbus.client import AsyncModbusTcpClient, AsyncModbusSerialClient
     from pymodbus.exceptions import ModbusException
     PYMODBUS_AVAILABLE = True
 except ImportError:
     PYMODBUS_AVAILABLE = False
 
-from .base_adapter import BaseAdapter, AdapterConfig, PollingAdapter
+from .base_adapter import BaseAdapter, PollingAdapter
+from ..config.models import AdapterModel
 from ..core.message import TrafficMessage
 
 
@@ -26,8 +27,8 @@ class ModbusAdapter(PollingAdapter):
     Supports both Modbus TCP and RTU for communication with industrial controllers.
     """
 
-    def __init__(self, config: AdapterConfig):
-        super().__init__(config)
+    def __init__(self, name: str, config: AdapterModel):
+        super().__init__(name, config)
 
         # Modbus configuration
         conn_params = config.connection_params or {}
@@ -72,15 +73,15 @@ class ModbusAdapter(PollingAdapter):
         try:
             self.logger.info(f"Connecting to Modbus PLC at {self.host}:{self.port}")
 
-            # Create appropriate client
+            # Create appropriate async client
             if self.protocol.lower() == 'tcp':
-                self.client = ModbusTcpClient(
+                self.client = AsyncModbusTcpClient(
                     host=self.host,
                     port=self.port,
                     timeout=self.config.timeout
                 )
             else:  # RTU
-                self.client = ModbusSerialClient(
+                self.client = AsyncModbusSerialClient(
                     port=self.serial_port,
                     baudrate=self.baudrate,
                     parity=self.parity,
@@ -88,10 +89,8 @@ class ModbusAdapter(PollingAdapter):
                     timeout=self.config.timeout
                 )
 
-            # Test connection
-            connected = await asyncio.get_event_loop().run_in_executor(
-                None, self.client.connect
-            )
+            # Test connection (native async)
+            connected = await self.client.connect()
 
             if not connected:
                 self.logger.error("Failed to connect to Modbus device")
@@ -99,9 +98,8 @@ class ModbusAdapter(PollingAdapter):
 
             # Test with a simple read
             try:
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.client.read_holding_registers(0, 1, slave=self.unit_id)
+                result = await self.client.read_holding_registers(
+                    0, 1, slave=self.unit_id
                 )
                 if result.isError():
                     self.logger.warning(f"Modbus test read failed: {result}")
@@ -120,9 +118,7 @@ class ModbusAdapter(PollingAdapter):
     async def disconnect(self):
         """Disconnect from PLC."""
         if self.client:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self.client.close
-            )
+            self.client.close()
         self._connected = False
         self.logger.info(f"Disconnected from Modbus PLC {self.controller_id}")
 
@@ -269,14 +265,12 @@ class ModbusAdapter(PollingAdapter):
                 op_type = op['type']
 
                 if op_type == 'write_coil':
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.client.write_coil(op['address'], op['value'], slave=self.unit_id)
+                    result = await self.client.write_coil(
+                        op['address'], op['value'], slave=self.unit_id
                     )
                 elif op_type == 'write_register':
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.client.write_register(op['address'], op['value'], slave=self.unit_id)
+                    result = await self.client.write_register(
+                        op['address'], op['value'], slave=self.unit_id
                     )
                 else:
                     self.logger.error(f"Unknown Modbus operation type: {op_type}")
@@ -304,9 +298,8 @@ class ModbusAdapter(PollingAdapter):
             address = reg_info['address']
             count = reg_info['count']
 
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.client.read_holding_registers(address, count, slave=self.unit_id)
+            result = await self.client.read_holding_registers(
+                address, count, slave=self.unit_id
             )
 
             if result.isError():
@@ -337,14 +330,12 @@ class ModbusAdapter(PollingAdapter):
             count = reg_info['count']
 
             if reg_info.get('type') == 'input':
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.client.read_input_registers(address, count, slave=self.unit_id)
+                result = await self.client.read_input_registers(
+                    address, count, slave=self.unit_id
                 )
             else:
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.client.read_holding_registers(address, count, slave=self.unit_id)
+                result = await self.client.read_holding_registers(
+                    address, count, slave=self.unit_id
                 )
 
             if result.isError():
@@ -373,9 +364,8 @@ class ModbusAdapter(PollingAdapter):
             address = reg_info['address']
             count = reg_info['count']
 
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.client.read_holding_registers(address, count, slave=self.unit_id)
+            result = await self.client.read_holding_registers(
+                address, count, slave=self.unit_id
             )
 
             if result.isError():

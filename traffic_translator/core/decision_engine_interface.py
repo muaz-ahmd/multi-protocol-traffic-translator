@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from .message import TrafficMessage
+from ..config.models import DecisionEngineConfig, DecisionEngineModel
 
 
 @dataclass
@@ -71,7 +72,7 @@ class RESTDecisionEngine(DecisionEngineInterface):
     REST API-based decision engine integration.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: DecisionEngineModel):
         """
         Initialize REST decision engine.
 
@@ -81,10 +82,9 @@ class RESTDecisionEngine(DecisionEngineInterface):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
-        self.base_url = config['base_url']
-        self.api_key = config.get('api_key')
-        self.timeout = config.get('timeout', 5.0)
-        self.retry_count = config.get('retry_count', 3)
+        self.base_url = config.base_url
+        self.api_key = config.api_key
+        self.timeout = config.timeout
 
         # Initialize HTTP client (will be implemented)
         self._http_client = None
@@ -127,7 +127,7 @@ class MQTTDecisionEngine(DecisionEngineInterface):
     MQTT-based decision engine integration.
     """
 
-    def __init__(self, config: Dict[str, Any], mqtt_client):
+    def __init__(self, config: DecisionEngineModel, mqtt_client):
         """
         Initialize MQTT decision engine.
 
@@ -139,9 +139,7 @@ class MQTTDecisionEngine(DecisionEngineInterface):
         self.mqtt_client = mqtt_client
         self.logger = logging.getLogger(__name__)
 
-        self.request_topic = config['request_topic']
-        self.response_topic = config['response_topic']
-        self.timeout = config.get('timeout', 5.0)
+        self.timeout = config.timeout
 
         # Response handling
         self._pending_requests: Dict[str, asyncio.Future] = {}
@@ -208,7 +206,7 @@ class LocalDecisionEngine(DecisionEngineInterface):
     Local decision engine for rule-based or simple ML decisions.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: DecisionEngineModel):
         """
         Initialize local decision engine.
 
@@ -219,7 +217,7 @@ class LocalDecisionEngine(DecisionEngineInterface):
         self.logger = logging.getLogger(__name__)
 
         # Simple rule-based decisions
-        self.rules = config.get('rules', [])
+        self.rules = config.rules or []
 
     async def request_decision(self, request: DecisionRequest) -> DecisionResponse:
         """Generate decision using local rules."""
@@ -264,7 +262,7 @@ class DecisionEngineManager:
     Manages multiple decision engines with fallback logic.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: DecisionEngineConfig):
         """
         Initialize decision engine manager.
 
@@ -275,16 +273,16 @@ class DecisionEngineManager:
         self.logger = logging.getLogger(__name__)
 
         self.engines: Dict[str, DecisionEngineInterface] = {}
-        self.fallback_order = config.get('fallback_order', [])
+        self.fallback_order = config.fallback_order
 
         self._initialize_engines()
 
     def _initialize_engines(self):
         """Initialize configured decision engines."""
-        engine_configs = self.config.get('engines', {})
+        engine_configs = self.config.engines
 
         for engine_name, engine_config in engine_configs.items():
-            engine_type = engine_config['type']
+            engine_type = engine_config.type
 
             if engine_type == 'rest':
                 engine = RESTDecisionEngine(engine_config)
@@ -302,7 +300,11 @@ class DecisionEngineManager:
 
     async def get_decision(self, request: DecisionRequest) -> Optional[DecisionResponse]:
         """
-        Get decision from available engines in fallback order.
+        Get decision from available engines concurrently.
+
+        Fires all available engines in parallel and returns the response
+        with the highest confidence score. Falls back through results
+        if some engines fail.
 
         Args:
             request: Decision request
@@ -310,19 +312,41 @@ class DecisionEngineManager:
         Returns:
             Decision response or None if no engine available
         """
-        for engine_name in self.fallback_order:
-            if engine_name in self.engines:
-                engine = self.engines[engine_name]
-                if engine.is_available():
-                    try:
-                        self.logger.debug(f"Requesting decision from {engine_name}")
-                        return await engine.request_decision(request)
-                    except Exception as e:
-                        self.logger.error(f"Decision engine {engine_name} failed: {e}")
-                        continue
+        # Collect available engines in fallback order
+        available = [
+            (name, self.engines[name])
+            for name in self.fallback_order
+            if name in self.engines and self.engines[name].is_available()
+        ]
 
-        self.logger.warning("No decision engines available")
-        return None
+        if not available:
+            self.logger.warning("No decision engines available")
+            return None
+
+        # Fire all engines concurrently
+        async def _safe_request(name: str, engine: DecisionEngineInterface):
+            try:
+                self.logger.debug(f"Requesting decision from {name}")
+                return await engine.request_decision(request)
+            except Exception as e:
+                self.logger.error(f"Decision engine {name} failed: {e}")
+                return None
+
+        results = await asyncio.gather(
+            *[_safe_request(name, engine) for name, engine in available]
+        )
+
+        # Pick the result with the highest confidence score
+        best: Optional[DecisionResponse] = None
+        for result in results:
+            if result is not None:
+                if best is None or result.confidence_score > best.confidence_score:
+                    best = result
+
+        if best is None:
+            self.logger.warning("All decision engines failed")
+
+        return best
 
     def get_available_engines(self) -> List[str]:
         """Get list of available engines."""

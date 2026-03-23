@@ -21,7 +21,30 @@ from .adapters.ntcip_adapter import NTCIPAdapter
 from .adapters.plc_adapter import ModbusAdapter
 from .adapters.relay_adapter import GPIOAdapter
 from .adapters.rest_adapter import RESTAdapter
-from .adapters.base_adapter import AdapterConfig
+from .config.models import AppConfig, AdapterModel
+
+
+class AdapterRegistry:
+    """Registry for dynamically creating protocol adapters."""
+    _adapters = {}
+
+    @classmethod
+    def register(cls, adapter_type: str, adapter_class: type):
+        cls._adapters[adapter_type] = adapter_class
+
+    @classmethod
+    def create(cls, name: str, config: AdapterModel):
+        adapter_class = cls._adapters.get(config.type)
+        if adapter_class:
+            return adapter_class(name, config)
+        return None
+
+# Register default adapters
+AdapterRegistry.register('mqtt', MQTTAdapter)
+AdapterRegistry.register('ntcip', NTCIPAdapter)
+AdapterRegistry.register('modbus', ModbusAdapter)
+AdapterRegistry.register('gpio', GPIOAdapter)
+AdapterRegistry.register('rest', RESTAdapter)
 
 
 class TrafficTranslator:
@@ -42,12 +65,13 @@ class TrafficTranslator:
 
         # Load configuration
         with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+            raw_config = yaml.safe_load(f)
+            self.config = AppConfig(**raw_config)
 
         # Core components
-        self.translation_engine = TranslationEngine(self.config.get('translation', {}))
-        self.decision_engine = DecisionEngineManager(self.config.get('decision_engine', {}))
-        self.feedback_listener = FeedbackListener(self.config.get('feedback', {}))
+        self.translation_engine = TranslationEngine(self.config.translation)
+        self.decision_engine = DecisionEngineManager(self.config.decision_engine)
+        self.feedback_listener = FeedbackListener(self.config.feedback)
 
         # Protocol adapters
         self.adapters: Dict[str, Any] = {}
@@ -65,6 +89,15 @@ class TrafficTranslator:
             'start_time': None
         }
 
+    async def _cleanup_task(self):
+        """Periodic background task to clean up expired phase states."""
+        while True:
+            await asyncio.sleep(300)  # Every 5 minutes
+            try:
+                self.translation_engine.cleanup_expired_states()
+            except Exception as e:
+                self.logger.error(f"Error during state cleanup: {e}")
+
     async def initialize(self):
         """Initialize all components."""
         self.logger.info("Initializing Traffic Translator...")
@@ -73,10 +106,7 @@ class TrafficTranslator:
             # Initialize adapters
             await self._initialize_adapters()
 
-            # Initialize feedback listener
-            self.feedback_listener.set_message_callback(self._on_feedback_message)
-
-            # Set message callbacks
+            # Set message callbacks for adapters
             for adapter in self.adapters.values():
                 adapter.set_message_callback(self._on_adapter_message)
 
@@ -94,6 +124,7 @@ class TrafficTranslator:
 
         try:
             # Start feedback listener
+            self.feedback_listener.set_message_callback(self._on_feedback_message)
             await self.feedback_listener.start_all()
 
             # Start adapters
@@ -103,6 +134,9 @@ class TrafficTranslator:
 
             if start_tasks:
                 await asyncio.gather(*start_tasks, return_exceptions=True)
+
+            # Start background state cleanup
+            asyncio.create_task(self._cleanup_task())
 
             self.logger.info("Traffic Translator started")
 
@@ -139,24 +173,14 @@ class TrafficTranslator:
 
     async def _initialize_adapters(self):
         """Initialize protocol adapters from configuration."""
-        adapter_configs = self.config.get('adapters', {})
+        adapter_configs = self.config.adapters
 
         for adapter_name, adapter_config in adapter_configs.items():
             try:
-                adapter_type = adapter_config.get('type')
-                config = AdapterConfig(
-                    name=adapter_name,
-                    type=adapter_type,
-                    enabled=adapter_config.get('enabled', True),
-                    controller_id=adapter_config.get('controller_id', adapter_name),
-                    connection_params=adapter_config.get('connection', {}),
-                    mapping_rules=adapter_config.get('mapping', {}),
-                    polling_interval=adapter_config.get('polling_interval', 5.0),
-                    timeout=adapter_config.get('timeout', 10.0)
-                )
-
+                adapter_type = adapter_config.type
+                
                 # Create adapter instance
-                adapter = self._create_adapter(config)
+                adapter = self._create_adapter(adapter_name, adapter_config)
 
                 if adapter:
                     self.adapters[adapter_name] = adapter
@@ -170,23 +194,14 @@ class TrafficTranslator:
             except Exception as e:
                 self.logger.error(f"Failed to initialize adapter {adapter_name}: {e}")
 
-    def _create_adapter(self, config: AdapterConfig):
-        """Create adapter instance based on type."""
-        adapter_type = config.type
-
-        if adapter_type == 'mqtt':
-            return MQTTAdapter(config)
-        elif adapter_type == 'ntcip':
-            return NTCIPAdapter(config)
-        elif adapter_type == 'modbus':
-            return ModbusAdapter(config)
-        elif adapter_type == 'gpio':
-            return GPIOAdapter(config)
-        elif adapter_type == 'rest':
-            return RESTAdapter(config)
-        else:
-            self.logger.error(f"Unknown adapter type: {adapter_type}")
-            return None
+    def _create_adapter(self, name: str, config: AdapterModel):
+        """Create adapter instance based on type using registry."""
+        adapter = AdapterRegistry.create(name, config)
+        
+        if not adapter:
+            self.logger.error(f"Unknown adapter type: {config.type}")
+            
+        return adapter
 
     def _on_adapter_message(self, message: TrafficMessage):
         """Handle incoming message from any adapter."""
@@ -218,23 +233,31 @@ class TrafficTranslator:
             self.logger.error(f"Error processing message: {e}")
             self.stats['errors'] += 1
 
-    async def _route_message(self, message: TrafficMessage):
+    async def _route_message(self, processed_msg: TrafficMessage):
         """Route processed message to appropriate adapters."""
         # Always send to MQTT for central logging/distribution
         if self.mqtt_adapter and self.mqtt_adapter.is_connected():
-            await self.mqtt_adapter.send_command(message)
+            await self.mqtt_adapter.send_command(processed_msg)
 
         # Route to specific protocol adapters based on controller_id
-        target_adapters = self._get_target_adapters(message.controller_id)
+        target_adapters = [
+            adapter for name, adapter in self.adapters.items()
+            if name != 'mqtt' and adapter.config.enabled and adapter.controller_id == processed_msg.controller_id
+        ]
 
-        for adapter in target_adapters:
-            try:
-                if adapter.is_connected():
-                    success = await adapter.send_command(message)
-                    if success and message.message_type == 'command':
-                        self.stats['commands_executed'] += 1
-            except Exception as e:
-                self.logger.error(f"Failed to send to adapter {adapter.name}: {e}")
+        # Concurrent dispatch to all target adapters
+        results = await asyncio.gather(
+            *[adapter.send_command(processed_msg) for adapter in target_adapters if adapter.is_connected()],
+            return_exceptions=True
+        )
+
+        for adapter, success in zip(target_adapters, results):
+            if isinstance(success, Exception):
+                self.logger.error(f"Error sending command via {adapter.name}: {success}")
+            elif not success:
+                self.logger.error(f"Failed to send command via {adapter.name}")
+            elif success and processed_msg.message_type == 'command':
+                self.stats['commands_executed'] += 1
 
     def _get_target_adapters(self, controller_id: str) -> List[Any]:
         """Get adapters that should receive messages for a controller."""
