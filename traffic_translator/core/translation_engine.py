@@ -32,6 +32,17 @@ class CommandType(Enum):
     FLASH = "flash"
     PREEMPT = "preempt"
     HOLD = "hold"
+    OFF = "off"
+
+# Safe transition rules: Current -> List of allowed next states
+TRANSITION_RULES = {
+    CommandType.RED: [CommandType.GREEN, CommandType.FLASH, CommandType.PREEMPT],
+    CommandType.GREEN: [CommandType.YELLOW, CommandType.RED, CommandType.PREEMPT],
+    CommandType.YELLOW: [CommandType.RED, CommandType.PREEMPT],
+    CommandType.FLASH: [CommandType.RED, CommandType.PREEMPT],
+    CommandType.PREEMPT: [CommandType.RED, CommandType.FLASH],
+    CommandType.OFF: [CommandType.RED, CommandType.FLASH]
+}
 
 
 @dataclass
@@ -75,6 +86,7 @@ class TranslationEngine:
 
         # Conflict detection
         self.conflicting_phases = config.conflicting_phases
+        self.min_all_red_duration = getattr(config, 'min_all_red_duration', 2)
 
         # Command history for optimization
         self.command_history: List[TrafficMessage] = []
@@ -139,6 +151,9 @@ class TranslationEngine:
         if message.priority is not None and (message.priority < 0 or message.priority > 2):
             raise ValidationError("Priority must be 0-2")
 
+        # Transition validation
+        self._validate_transition(message, command_type)
+
     def _validate_status(self, message: TrafficMessage):
         """Validate status message."""
         if not message.current_phase:
@@ -170,21 +185,30 @@ class TranslationEngine:
         for active_phase_id, active_state in self.phase_states.items():
             if active_state.current_command in ['green', 'yellow', 'flash']:
                 # Check if active_phase conflicts with target phase
-                if active_phase_id in self.conflicting_phases:
-                    if phase_id in self.conflicting_phases[active_phase_id]:
-                        conflicts.append(
-                            f"Phase {phase_id} conflicts with active phase {active_phase_id}"
-                        )
-                # Also check reverse conflicts
-                if phase_id in self.conflicting_phases:
-                    if active_phase_id in self.conflicting_phases[phase_id]:
-                        conflicts.append(
-                            f"Phase {phase_id} conflicts with active phase {active_phase_id}"
-                        )
+                if active_phase_id in self.conflicting_phases.get(phase_id, []) or \
+                   phase_id in self.conflicting_phases.get(active_phase_id, []):
+                    conflicts.append(
+                        f"Phase {phase_id} conflicts with active phase {active_phase_id}"
+                    )
 
         # Check preemption conflicts
         if command == 'preempt' and not self.preemption_enabled:
             conflicts.append("Preemption is disabled")
+
+        # Check for red clearance (all-red)
+        if command == 'green':
+            current_time = time.time()
+            for active_phase_id, active_state in self.phase_states.items():
+                if active_phase_id in self.conflicting_phases.get(phase_id, []) or \
+                   phase_id in self.conflicting_phases.get(active_phase_id, []):
+                    
+                    if active_state.current_command == 'red':
+                        time_since_red = current_time - active_state.last_updated
+                        if time_since_red < self.min_all_red_duration:
+                            conflicts.append(
+                                f"Red clearance violation: {time_since_red:.1f}s < {self.min_all_red_duration}s "
+                                f"since conflicting phase {active_phase_id} turned red"
+                            )
 
         # Check for simultaneous conflicting commands
         active_commands = [
@@ -196,6 +220,27 @@ class TranslationEngine:
             conflicts.append("Multiple phases active simultaneously")
 
         return conflicts
+
+    def _validate_transition(self, message: TrafficMessage, next_command: CommandType):
+        """Ensure transition from current state is safe."""
+        if not message.phase_id:
+            return
+
+        current_state = self.phase_states.get(message.phase_id)
+        if not current_state:
+            return
+
+        try:
+            current_cmd = CommandType(current_state.current_command.lower())
+        except ValueError:
+            return # Unknown current state, allow transition but log it later
+
+        allowed_next = TRANSITION_RULES.get(current_cmd, [])
+        if next_command not in allowed_next:
+            raise ValidationError(
+                f"Unsafe transition: {current_cmd.value} -> {next_command.value} "
+                f"for phase {message.phase_id}"
+            )
 
     def optimize_command(self, message: TrafficMessage) -> TrafficMessage:
         """

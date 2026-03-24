@@ -98,45 +98,25 @@ class NTCIP1202:
         6: 'conflict_monitor_fault'
     }
 
-    @staticmethod
-    def get_phase_status(phase_number: int) -> str:
+    def __init__(self, oid_mapping: Optional[Dict[str, str]] = None):
         """
-        Get OID for phase status.
-
-        Args:
-            phase_number: Phase number (1-16)
-
-        Returns:
-            OID string
+        Initialize with optional OID overrides.
         """
-        return f"{NTCIP_OIDS['phaseStatus']}.{phase_number}"
+        self.oids = NTCIP_OIDS.copy()
+        if oid_mapping:
+            self.oids.update(oid_mapping)
 
-    @staticmethod
-    def get_detector_count(detector_number: int) -> str:
-        """
-        Get OID for detector count.
+    def get_phase_status(self, phase_number: int) -> str:
+        """Get OID for phase status."""
+        return f"{self.oids['phaseStatus']}.{phase_number}"
 
-        Args:
-            detector_number: Detector number (1-255)
+    def get_detector_count(self, detector_number: int) -> str:
+        """Get OID for detector count."""
+        return f"{self.oids['detectorCount']}.{detector_number}"
 
-        Returns:
-            OID string
-        """
-        return f"{NTCIP_OIDS['detectorCount']}.{detector_number}"
-
-    @staticmethod
-    def get_timing_parameter(phase_number: int, parameter: str) -> str:
-        """
-        Get OID for timing parameter.
-
-        Args:
-            phase_number: Phase number (1-16)
-            parameter: Parameter name ('minimumGreen', 'maximumGreen', etc.)
-
-        Returns:
-            OID string
-        """
-        base_oid = NTCIP_OIDS.get(parameter)
+    def get_timing_parameter(self, phase_number: int, parameter: str) -> str:
+        """Get OID for timing parameter."""
+        base_oid = self.oids.get(parameter)
         if not base_oid:
             raise ValueError(f"Unknown timing parameter: {parameter}")
         return f"{base_oid}.{phase_number}"
@@ -273,7 +253,7 @@ class SNMPTrapDefinitions:
             return {'trap_type': 'non_ntcip', 'data': varbinds}
 
         # Parse NTCIP trap data
-        parsed_data = {
+        parsed_data: Dict[str, Any] = {
             'trap_type': trap_info['name'],
             'timestamp': None,
             'controller_id': None,
@@ -285,18 +265,21 @@ class SNMPTrapDefinitions:
         for varbind in varbinds:
             oid = varbind.get('oid', '')
             value = varbind.get('value')
+            
+            if value is None:
+                continue
 
             # Extract data based on OID patterns
             if oid.startswith(NTCIP_OIDS['phaseStatus']):
                 phase_num = oid.split('.')[-1]
-                parsed_data['phase_data'][f'phase_{phase_num}'] = NTCIP1202.decode_phase_status(value)
+                parsed_data['phase_data'][f'phase_{phase_num}'] = NTCIP1202.decode_phase_status(int(value))
 
             elif oid.startswith(NTCIP_OIDS['detectorCount']):
                 detector_num = oid.split('.')[-1]
                 parsed_data['detector_data'][f'detector_{detector_num}'] = value
 
             elif oid.startswith(NTCIP_OIDS['controllerFault']):
-                parsed_data['fault_data']['controller'] = NTCIP1202.decode_fault_code(value)
+                parsed_data['fault_data']['controller'] = NTCIP1202.decode_fault_code(int(value))
 
             # Add more parsing as needed...
 
@@ -308,8 +291,10 @@ class NTCIPMessageMapper:
     Maps between TrafficMessages and NTCIP objects.
     """
 
-    @staticmethod
-    def message_to_ntcip_commands(message: 'TrafficMessage') -> List[Dict[str, Any]]:
+    def __init__(self, ntcip: NTCIP1202):
+        self.ntcip = ntcip
+
+    def message_to_ntcip_commands(self, message: 'TrafficMessage') -> List[Dict[str, Any]]:
         """
         Convert TrafficMessage to NTCIP commands.
 
@@ -332,8 +317,8 @@ class NTCIPMessageMapper:
 
         # Phase control command
         if command in ['green', 'yellow', 'red', 'flash']:
-            oid = NTCIP1202.get_phase_status(int(phase_id))
-            value = NTCIP1202.encode_phase_command(command)
+            oid = self.ntcip.get_phase_status(int(phase_id))
+            value = self.ntcip.encode_phase_command(command)
 
             commands.append({
                 'oid': oid,
@@ -344,7 +329,7 @@ class NTCIPMessageMapper:
         # Duration/timing commands
         if message.duration:
             if command == 'green':
-                oid = NTCIP1202.get_timing_parameter(int(phase_id), 'maximumGreen')
+                oid = self.ntcip.get_timing_parameter(int(phase_id), 'maximumGreen')
                 commands.append({
                     'oid': oid,
                     'value': message.duration,

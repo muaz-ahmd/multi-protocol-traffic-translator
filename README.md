@@ -12,12 +12,13 @@ The Traffic Translator serves as a universal communication hub for traffic signa
 ### Key Features
 
 ✅ **Multi-Protocol Support**: MQTT, NTCIP 1202, Modbus TCP/RTU, GPIO Relay, REST API
-✅ **Smart Translation Engine**: Validation, conflict detection, optimization
-✅ **Decision Engine Integration**: AI-powered traffic control
-✅ **Real-time Feedback Loop**: SNMP traps and Modbus polling
-✅ **Preemption Support**: Emergency vehicle priority handling
-✅ **Production Ready**: Docker support, comprehensive logging, error handling
-✅ **Extensible Architecture**: Plugin-based adapter system
+✅ **Command Lifecycle Tracking**: Unique `command_id` tracking from PENDING to COMPLETED/FAILED
+✅ **State Aggregator**: Centralized source of truth for all controller states
+✅ **Safety Enforcement**: Strict Red Clearance Intervals and phase transition validation
+✅ **Strict MQTT Validation**: Regex-enforced topic structures for region/controller isolation
+✅ **Resilience & Isolation**: Exponential backoff retries, Circuit Breakers, and adapter isolation
+✅ **Structured Logging**: Machine-readable JSON logs for easy trace correlation
+✅ **Production Ready**: Docker support, comprehensive Pydantic validation
 
 ## 🏗️ Architecture
 
@@ -26,17 +27,17 @@ Cloud Layer (Analytics/Dashboard)
     ↓
 Decision Engine (Rules/AI/Priority)
     ↓
-Translation Engine (Validation + Mapping + Optimization)
-    ↓ (4 routes)
-NTCIP Driver | Modbus Driver | GPIO Driver | REST Driver
-    ↓ (4 routes)
-Traffic Ctrl | PLC System | Relay Board | Smart API
-    ↓ (4 routes)
-Perception Layer (Camera/IoT/YOLO)
+State Aggregator (Global State Sync)
     ↓
-Feedback Listener (SNMP Traps + Modbus Reads)
-    ↓ (loops back to Decision Engine)
-MQTT → Cloud Analytics
+Translation Engine (Safety Rules + Validation)
+    ↓ (4 routes)
+NTCIP Adapter | Modbus Adapter | GPIO Adapter | REST Adapter
+    ↓ (isolated tasks with retries/circuit breakers)
+Traffic Ctrl  | PLC System     | Relay Board  | Smart API
+    ↓
+Feedback Listener (SNMP Traps + Polling)
+    ↓ (updates State Aggregator)
+MQTT Hub → Cloud Analytics
 ```
 
 ## 🚀 Quick Start
@@ -71,8 +72,8 @@ pip install -e .
 
 4. **Send commands via MQTT**:
    ```bash
-   # Example: Turn phase 1 green for 30 seconds
-   mosquitto_pub -t "traffic/intersection_1/command/phase_1" \
+   # Example: Turn phase 1 green for 30 seconds on intersection_1 in region 'north'
+   mosquitto_pub -t "traffic/north/intersection_1/command/phase_1" \
      -m '{"command": "green", "duration": 30, "priority": 0}'
    ```
 
@@ -154,6 +155,7 @@ All communication uses standardized MQTT messages:
 ```python
 # Command Message
 {
+  "command_id": "550e8400-e29b-41d4-a716-446655440000",
   "timestamp": 1640995200.0,
   "controller_id": "intersection_1",
   "message_type": "command",
@@ -163,12 +165,12 @@ All communication uses standardized MQTT messages:
   "priority": 0
 }
 
-# Status Message
+# Status Message (Centralized via State Aggregator)
 {
   "timestamp": 1640995200.0,
   "controller_id": "intersection_1",
   "message_type": "status",
-  "current_phase": "phase_1",
+  "status": "active",
   "phase_status": {"phase_1": "green", "phase_2": "red"}
 }
 
@@ -184,10 +186,10 @@ All communication uses standardized MQTT messages:
 
 ### MQTT Topics
 
-- `traffic/{controller_id}/command/{phase_id}` - Send commands
-- `traffic/{controller_id}/status/{phase_id}` - Receive status updates
-- `traffic/{controller_id}/feedback/{phase_id}` - Receive sensor feedback
-- `traffic/{controller_id}/error` - Error messages
+- `traffic/{region}/{controller_id}/command/{phase_id}` - Send commands
+- `traffic/{region}/{controller_id}/status` - Receive aggregated status
+- `traffic/{region}/{controller_id}/feedback` - Receive sensor data
+- `traffic/{region}/{controller_id}/error` - Fault notifications
 
 ## 🧪 Testing
 

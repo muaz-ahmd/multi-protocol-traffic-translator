@@ -27,9 +27,14 @@ class TranslationConfig(BaseModel):
     preemption_enabled: bool = True
     history_size: int = 100
     default_durations: Dict[str, int] = Field(default_factory=lambda: {
-        'green': 45, 'yellow': 5, 'red': 30, 'flash': 10
+        "green": 45,
+        "yellow": 5,
+        "red": 30,
+        "flash": 10
     })
     conflicting_phases: Dict[str, List[str]] = Field(default_factory=dict)
+    min_all_red_duration: int = 2
+    transition_validation_enabled: bool = True
 
 class DecisionEngineModel(BaseModel):
     """Configuration for a single decision engine."""

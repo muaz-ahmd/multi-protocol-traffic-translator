@@ -41,11 +41,9 @@ class NTCIPAdapter(PollingAdapter):
         self.timeout = conn_params.get('timeout', 5)
         self.retries = conn_params.get('retries', 3)
 
-        # NTCIP mapping
-        self.phase_count = conn_params.get('phase_count', 8)
-        self.detector_count = conn_params.get('detector_count', 16)
-
-        # SNMP engine
+        # NTCIP mapping and engine
+        self.ntcip = NTCIP1202(oid_mapping=config.mapping)
+        self.mapper = NTCIPMessageMapper(self.ntcip)
         self.snmp_engine = SnmpEngine()
 
         # Statistics
@@ -112,7 +110,7 @@ class NTCIPAdapter(PollingAdapter):
 
         try:
             # Convert message to NTCIP commands
-            ntcip_commands = NTCIPMessageMapper.message_to_ntcip_commands(message)
+            ntcip_commands = self.mapper.message_to_ntcip_commands(message)
 
             if not ntcip_commands:
                 self.logger.warning(f"No NTCIP commands generated for message: {message}")
@@ -213,7 +211,7 @@ class NTCIPAdapter(PollingAdapter):
             # Prepare GET request for all phases
             var_binds = []
             for phase_num in range(1, self.phase_count + 1):
-                oid = NTCIP1202.get_phase_status(phase_num)
+                oid = self.ntcip.get_phase_status(phase_num)
                 var_binds.append(ObjectType(ObjectIdentity(oid)))
 
             # Execute native async GET
@@ -237,7 +235,7 @@ class NTCIPAdapter(PollingAdapter):
             for i, var_bind in enumerate(var_binds_result):
                 phase_num = i + 1
                 value = int(var_bind[1])
-                status = NTCIP1202.decode_phase_status(value)
+                status = self.ntcip.decode_phase_status(value)
                 statuses[f'phase_{phase_num}'] = status
 
         except Exception as e:
@@ -253,7 +251,7 @@ class NTCIPAdapter(PollingAdapter):
             # Prepare GET request for detector counts
             var_binds = []
             for detector_num in range(1, min(self.detector_count, 16) + 1):  # Limit to 16 for performance
-                oid = NTCIP1202.get_detector_count(detector_num)
+                oid = self.ntcip.get_detector_count(detector_num)
                 var_binds.append(ObjectType(ObjectIdentity(oid)))
 
             # Execute native async GET

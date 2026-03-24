@@ -105,7 +105,7 @@ translation:
     phase_2: [phase_4]
 ```
 
-> **Safety**: The translation engine will reject any command that would put two conflicting phases in `green` at the same time.
+> **Safety**: The translation engine will reject any command that would put two conflicting phases in `green` at the same time. It also enforces **Red Clearance Intervals** (all-red time between conflicting greens) and strict **Green -> Yellow -> Red** sequences.
 
 ---
 
@@ -182,10 +182,10 @@ adapters:
       client_id: "traffic_translator_main"
       keepalive: 60
     topics:
-      command: "traffic/+/command/+"
-      status: "traffic/+/status/+"
-      feedback: "traffic/+/feedback/+"
-      error: "traffic/+/error"
+      command: "traffic/+/+/command/+"    # traffic/{region}/{controller_id}/command/{phase_id}
+      status: "traffic/+/+/status"         # traffic/{region}/{controller_id}/status
+      feedback: "traffic/+/+/feedback"     # traffic/{region}/{controller_id}/feedback
+      error: "traffic/+/+/error"           # traffic/{region}/{controller_id}/error
 ```
 
 #### NTCIP/SNMP
@@ -276,13 +276,15 @@ adapters:
 ```yaml
 logging:
   level: INFO                    # DEBUG | INFO | WARNING | ERROR
-  format: "%(asctime)s %(name)s %(levelname)s: %(message)s"
+  format: "json"                 # Use "json" for structured logging (recommended)
   file: "traffic_translator.log" # null = stdout only
 
 system:
-  max_concurrent_commands: 10    # Concurrent dispatch limit
-  command_timeout: 30            # Per-command timeout (seconds)
-  health_check_interval: 60     # Health poll interval (seconds)
+  max_concurrent_commands: 10
+  command_timeout: 30            # Seconds until a PENDING command expires
+  retry_limit: 3                 # Number of exponential backoff retries
+  retry_delay_base: 1.0          # Base delay for exponential backoff
+  health_check_interval: 60
 ```
 
 ---
@@ -294,15 +296,15 @@ system:
 │  ML Model    │     │          Traffic Translator             │     │  NTCIP       │
 │  (YOLO etc.) │────▶│                                        │────▶│  Controller  │
 └──────────────┘     │  ┌──────────┐    ┌──────────────────┐  │     └──────────────┘
-                     │  │ MQTT Hub │◀──▶│ Translation Engine│  │
-┌──────────────┐     │  │ (central)│    │ (validation +     │  │     ┌──────────────┐
-│  Decision    │────▶│  └──────────┘    │  conflict detect) │  │────▶│  Modbus PLC  │
-│  Engine API  │     │                  └──────────────────┘  │     └──────────────┘
-└──────────────┘     │  ┌──────────┐    ┌──────────────────┐  │
-                     │  │ Adapter  │    │  Circuit Breaker  │  │     ┌──────────────┐
-┌──────────────┐     │  │ Registry │    │  (per adapter)    │  │────▶│  GPIO Relay  │
-│  Feedback    │────▶│  └──────────┘    └──────────────────┘  │     └──────────────┘
-│  Sensors     │     │                                        │
+                     │  │ MQTT Hub │◀──▶│ State Aggregator │  │
+┌──────────────┐     │  │ (central)│    │ (Source of Truth)│  │     ┌──────────────┐
+│  Decision    │────▶│  └──────────┘    └────────┬─────────┘  │────▶│  Modbus PLC  │
+│  Engine API  │     │                           │            │     └──────────────┘
+└──────────────┘     │                  ┌────────▼─────────┐  │
+                     │  ┌──────────┐    │Translation Engine│  │     ┌──────────────┐
+┌──────────────┐     │  │ Adapter  │◀──▶│(Safety/Lifecycle)│  │────▶│  GPIO Relay  │
+│  Feedback    │────▶│  │ Registry │    └──────────────────┘  │     └──────────────┘
+│  Sensors     │     │  └──────────┘                          │
 └──────────────┘     └────────────────────────────────────────┘     ┌──────────────┐
                                                                 ────▶│  REST API    │
                                                                     └──────────────┘
@@ -317,14 +319,15 @@ system:
 All internal messaging follows this topic convention:
 
 ```
-traffic/{controller_id}/{message_type}/{phase_id}
+traffic/{region}/{controller_id}/{message_type}/{phase_id}
 ```
 
 | Segment | Values | Example |
 |---|---|---|
-| `controller_id` | Any string identifier | `intersection_1` |
+| `region` | String (any regional grouping) | `north`, `downtown` |
+| `controller_id` | Unique string identifier | `intersection_1` |
 | `message_type` | `command`, `status`, `feedback`, `error` | `command` |
-| `phase_id` | `phase_1` … `phase_N` (optional) | `phase_3` |
+| `phase_id` | `phase_1` … `phase_N` (required for commands) | `phase_1` |
 
 **Examples**:
 ```
@@ -341,13 +344,16 @@ Every message flowing through the system uses the `TrafficMessage` dataclass. Th
 
 ```json
 {
+  "command_id": "550e8400-e29b-41d4-a716-446655440000",
+  "correlation_id": "optionally-link-feedback",
   "timestamp": 1711223344.567,
   "controller_id": "intersection_1",
   "message_type": "command",
   "phase_id": "phase_1",
   "command": "green",
   "duration": 45,
-  "priority": 0
+  "priority": 0,
+  "status": "pending"
 }
 ```
 

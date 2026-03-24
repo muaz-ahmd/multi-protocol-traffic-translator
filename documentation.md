@@ -10,38 +10,37 @@ The Multi-Protocol Traffic Translator is a sophisticated, production-ready syste
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Cloud Layer                              │
+│                    Cloud Layer (MQTT Hub)                   │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │            Decision Engine (AI/Rules)              │    │
 │  └─────────────────┬───────────────────────────────────┘    │
 └─────────────────────┼───────────────────────────────────────┘
                       │
-┌─────────────────────┼───────────────────────────────────────┐
-│  ┌──────────────────▼───────────────────────────────────┐   │
-│  │         Translation Engine (Core Logic)             │   │
-│  │  ┌─────────────────────────────────────────────────┐ │   │
-│  │  │ Validation │ Conflict Detection │ Optimization │ │   │
-│  │  └─────────────────────────────────────────────────┘ │   │
-│  └─────────────────┬───────────────────────────────────┘   │
-└─────────────────────┼───────────────────────────────────────┘
+┌─────────────────────▼───────────────────────────────────────┐
+│              State Aggregator (Global Cache)                │
+│  (Central source of truth for all controllers & phases)     │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│         Translation Engine (Safety & Lifecycle)             │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ Validation │ Conflict Detection │ Lifecycle Tracking │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────┬───────────────────────────────────────┘
                       │
     ┌─────────────────┼─────────────────┐
     │                 │                 │
 ┌───▼───┐  ┌──────────▼─────────┐  ┌───▼───┐
-│NTCIP  │  │       MQTT        │  │Modbus │
-│Adapter│  │     (Central)     │  │Adapter│
+│NTCIP  │  │   GPIO Relay      │  │Modbus │
+│Adapter│  │   (Controller)    │  │Adapter│
 └───┬───┘  └──────────┬─────────┘  └───┬───┘
     │                 │                 │
-┌───▼───┐  ┌──────────▼─────────┐  ┌───▼───┐
-│Traffic│  │   Traffic Ctrl    │  │  PLC  │
-│Signal │  │     Systems       │  │System │
-│Ctrl   │  └────────────────────┘  └───────┘
-└───────┘
-    │
-┌───▼───┐  ┌─────────────────────┐  ┌───────┐
-│ GPIO │  │     REST API        │  │Feedback│
-│Relay │  │   Integration       │  │Listener│
-└──────┘  └─────────────────────┘  └───────┘
+    └─────────────────┼─────────────────┘
+                      │
+            ┌─────────▼─────────┐
+            │ Feedback Listener │
+            │ (SNMP/Modbus/In)  │
+            └───────────────────┘
 ```
 
 ### Core Components
@@ -55,11 +54,12 @@ The Multi-Protocol Traffic Translator is a sophisticated, production-ready syste
 - Manages configuration loading, component initialization, and message routing
 
 **Responsibilities**:
-- Initialize and start all protocol adapters
-- Route messages between adapters via the translation engine
+- Initialize and start all protocol adapters with strict validation
+- Route messages with **Command ID** tracking and lifecycle management
+- Implement **State Aggregator** for centralized status lookups
 - Handle system shutdown and cleanup
-- Provide health monitoring and statistics
-- Manage concurrent operations with asyncio
+- Provide health monitoring via **Circuit Breaker** states
+- Manage concurrent operations and failure isolation
 
 **Configuration**: Reads YAML configuration file specifying adapters, translation rules, and system settings.
 
@@ -75,8 +75,9 @@ The Multi-Protocol Traffic Translator is a sophisticated, production-ready syste
 **Features**:
 - **Message Validation**: Ensures commands are safe and properly formatted
 - **Conflict Detection**: Prevents conflicting phase commands (e.g., two greens simultaneously)
-- **Command Optimization**: Applies default durations, adjusts priorities, optimizes based on history
-- **Phase State Tracking**: Maintains current state of all traffic phases
+- **Safety Enforcement**: Enforces **Red Clearance Intervals** and valid phase sequences
+- **Lifecycle Tracking**: Tracks commands through `PENDING`, `SENT`, `ACK`, `EXECUTING`, and `COMPLETED`.
+- **Phase State Tracking**: Maintains current state of all traffic phases in coordination with the State Aggregator
 - **History-Based Optimization**: Learns from command patterns to optimize future commands
 
 **Validation Rules**:
@@ -94,14 +95,16 @@ The Multi-Protocol Traffic Translator is a sophisticated, production-ready syste
 ```python
 @dataclass
 class TrafficMessage:
+    command_id: str             # Unique UUID for lifecycle tracking
     timestamp: float
     controller_id: str
-    message_type: str  # 'command', 'status', 'feedback', 'error'
+    message_type: str           # 'command', 'status', 'feedback', 'error'
+    correlation_id: Optional[str] = None  # Links feedback to commands
+    status: Optional[str] = None          # 'pending', 'sent', 'ack', 'failed', 'timeout'
     phase_id: Optional[str] = None
-    command: Optional[str] = None  # 'green', 'yellow', 'red', 'flash', 'preempt'
+    command: Optional[str] = None         # 'green', 'yellow', 'red', 'flash', 'preempt'
     duration: Optional[int] = None
-    priority: Optional[int] = None  # 0=normal, 1=high, 2=critical
-    current_phase: Optional[str] = None
+    priority: Optional[int] = None        # 0=normal, 1=high, 2=critical
     phase_status: Optional[Dict[str, Any]] = None
     detector_status: Optional[Dict[str, Any]] = None
     error_code: Optional[str] = None
@@ -110,10 +113,10 @@ class TrafficMessage:
 ```
 
 **MQTT Topic Structure**:
-- `traffic/{controller_id}/command/{phase_id}` - Send commands
-- `traffic/{controller_id}/status/{phase_id}` - Receive status updates
-- `traffic/{controller_id}/feedback/{phase_id}` - Receive sensor feedback
-- `traffic/{controller_id}/error` - Error messages
+- `traffic/{region}/{controller_id}/command/{phase_id}` - Send commands
+- `traffic/{region}/{controller_id}/status` - Receive aggregated status
+- `traffic/{region}/{controller_id}/feedback` - Receive sensor data
+- `traffic/{region}/{controller_id}/error` - Error messages
 
 #### 4. Decision Engine Interface (`traffic_translator/core/decision_engine_interface.py`)
 
@@ -173,9 +176,10 @@ class TrafficMessage:
 
 **Features**:
 - Connects to MQTT broker as central hub
-- Subscribes to all traffic topics
+- Subscribes to regional traffic topics using regex-enforced patterns
+- Validates topic structure: `traffic/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)`
 - Publishes commands and receives status/feedback
-- Asynchronous message processing
+- Asynchronous message processing with bounded queues
 - QoS support and connection management
 
 **Configuration**:

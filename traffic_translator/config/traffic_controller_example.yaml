@@ -68,10 +68,10 @@ adapters:
       client_id: "traffic_translator_main"
       keepalive: 60
     topics:
-      command: "traffic/+/command/+"
-      status: "traffic/+/status/+"
-      feedback: "traffic/+/feedback/+"
-      error: "traffic/+/error"
+      command: "traffic/+/+/command/+"    # traffic/{region}/{controller_id}/command/{phase_id}
+      status: "traffic/+/+/status"         # traffic/{region}/{controller_id}/status
+      feedback: "traffic/+/+/feedback"     # traffic/{region}/{controller_id}/feedback
+      error: "traffic/+/+/error"           # traffic/{region}/{controller_id}/error
 
   # NTCIP Controller
   ntcip_controller_1:
@@ -165,7 +165,7 @@ adapters:
 # Logging Configuration
 logging:
   level: INFO
-  format: "%(asctime)s %(name)s %(levelname)s: %(message)s"
+  format: "json"  # Use "json" for structured structured logging (recommended)
   file: "traffic_translator.log"
 
 # System Configuration
